@@ -1,0 +1,19 @@
+[Unit]
+Description=Lunaris Permission Helper
+Documentation=https://github.com/lunaris-sys/installd
+
+[Service]
+Type=dbus
+BusName=org.lunaris.PermissionHelper1
+ExecStart=/usr/lib/lunaris/permission-helper
+User=root
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lunaris/permissions
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
