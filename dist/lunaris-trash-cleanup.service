@@ -1,0 +1,6 @@
+[Unit]
+Description=Lunaris trash cleanup (removes expired uninstalled apps)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/busctl --user call org.lunaris.InstallDaemon1 /org/lunaris/InstallDaemon1 org.lunaris.InstallDaemon1 CleanupTrash

@@ -1,0 +1,25 @@
+[Unit]
+Description=Lunaris Install Helper (privileged D-Bus service)
+Documentation=https://github.com/lunaris-sys/installd
+
+[Service]
+Type=dbus
+BusName=org.lunaris.InstallHelper1
+ExecStart=/usr/lib/lunaris/libexec/lunaris-install-helper
+User=root
+Group=root
+
+# Security hardening.
+ProtectSystem=strict
+ReadWritePaths=/usr/lib/lunaris/apps /usr/share/applications
+ProtectHome=yes
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

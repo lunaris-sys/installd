@@ -1,0 +1,10 @@
+[Unit]
+Description=Lunaris trash cleanup (daily, expires after 30 days)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

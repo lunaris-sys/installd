@@ -1,0 +1,18 @@
+[Unit]
+Description=Lunaris Install Daemon (user service)
+Documentation=https://github.com/lunaris-sys/installd
+
+[Service]
+Type=dbus
+BusName=org.lunaris.InstallDaemon1
+ExecStart=%h/.local/lib/lunaris/libexec/lunaris-installd
+
+# Security hardening.
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/lunaris %h/.local/share/applications
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+
+[Install]
+WantedBy=default.target

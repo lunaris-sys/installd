@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "install-helper",
+    "installd",
     "permission-helper",
 ]
 resolver = "2"
