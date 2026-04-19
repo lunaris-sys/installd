@@ -20,6 +20,10 @@ pub struct InstallTransaction {
     installed_schemas: bool,
     installed_modules: Vec<String>,
     desktop_entry_path: Option<PathBuf>,
+    /// Path of the keybinding fragment we wrote, if any. `None` means
+    /// the manifest had no shippable bindings (empty list or every
+    /// entry was filtered out by permission rules).
+    keybindings_fragment: Option<PathBuf>,
     committed: bool,
 }
 
@@ -33,6 +37,7 @@ impl InstallTransaction {
             installed_schemas: false,
             installed_modules: Vec::new(),
             desktop_entry_path: None,
+            keybindings_fragment: None,
             committed: false,
         }
     }
@@ -85,6 +90,17 @@ impl InstallTransaction {
         Ok(())
     }
 
+    /// Step: Write the compositor keybinding fragment (if any).
+    ///
+    /// Called between `install_modules` and `create_desktop_entry` so
+    /// the module is already on disk when the compositor tries to
+    /// dispatch the new shortcut.
+    pub fn write_keybindings(&mut self) -> Result<(), InstallError> {
+        let path = install::write_keybindings_fragment(&self.manifest)?;
+        self.keybindings_fragment = path;
+        Ok(())
+    }
+
     /// Step: Create desktop entry.
     pub fn create_desktop_entry(&mut self) -> Result<(), InstallError> {
         let path = install::create_desktop_entry(&self.manifest)?;
@@ -118,6 +134,13 @@ impl InstallTransaction {
                     .arg(path.parent().unwrap_or(Path::new(".")))
                     .status();
                 tracing::debug!("rollback: removed desktop entry");
+            }
+        }
+
+        if let Some(ref path) = self.keybindings_fragment {
+            if path.exists() {
+                let _ = fs::remove_file(path);
+                tracing::debug!("rollback: removed keybindings fragment");
             }
         }
 
@@ -239,6 +262,7 @@ mod tests {
             permissions: PermissionInfo::default(),
             schemas: SchemaInfo::default(),
             modules: ModuleInfo::default(),
+            keybindings: Vec::new(),
         }
     }
 

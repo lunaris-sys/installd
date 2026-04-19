@@ -281,7 +281,14 @@ async fn run_install_package(
     emit_progress(conn, job_id, 65, "installing modules").await;
     txn.install_modules()?;
 
-    // 10. Create desktop entry.
+    // 10. Write compositor keybinding fragment, if the manifest ships
+    //     any. Sits between modules and the desktop entry so the
+    //     shortcut is live before the app becomes launchable.
+    queue.update_progress(job_id, 72, "writing keybindings");
+    emit_progress(conn, job_id, 72, "writing keybindings").await;
+    txn.write_keybindings()?;
+
+    // 11. Create desktop entry.
     queue.update_progress(job_id, 80, "creating desktop entry");
     emit_progress(conn, job_id, 80, "creating desktop entry").await;
     txn.create_desktop_entry()?;

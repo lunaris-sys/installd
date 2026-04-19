@@ -56,6 +56,13 @@ pub struct Manifest {
     pub schemas: SchemaInfo,
     #[serde(default)]
     pub modules: ModuleInfo,
+    /// Static keybindings the package ships. One fragment file per
+    /// package is written to
+    /// `~/.config/lunaris/compositor.d/keybindings.d/<package.id>.toml`
+    /// and removed on uninstall. Empty by default; packages that do
+    /// not ship shortcuts leave the section out entirely.
+    #[serde(default, rename = "keybinding")]
+    pub keybindings: Vec<KeybindingEntry>,
 }
 
 /// [schemas] section.
@@ -126,6 +133,51 @@ pub struct PermissionInfo {
     pub notifications: bool,
     #[serde(default)]
     pub clipboard: bool,
+    /// Input subsystem permission requests. Known values:
+    /// `"register_focused_bindings"`, `"register_global_bindings"`.
+    /// Entries are matched case-sensitively.
+    #[serde(default)]
+    pub input: Vec<String>,
+}
+
+impl PermissionInfo {
+    /// True iff `permissions.input` declares `"register_global_bindings"`.
+    pub fn can_register_global_bindings(&self) -> bool {
+        self.input.iter().any(|p| p == "register_global_bindings")
+    }
+}
+
+/// One entry of the `[[keybinding]]` array in a package manifest.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct KeybindingEntry {
+    pub id: String,
+    pub label: String,
+    pub default_binding: String,
+    /// Optional pre-composed action. If absent, the install daemon
+    /// synthesises `module:<package.id>:<id>`.
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// `"global"` (default) or `"focused"`. See the manifest in
+    /// `sdk/modules` for the semantic contract.
+    #[serde(default = "default_keybinding_scope")]
+    pub scope: String,
+}
+
+fn default_keybinding_scope() -> String {
+    "global".into()
+}
+
+impl KeybindingEntry {
+    /// Resolve the action string that should be written to the
+    /// compositor fragment for this entry.
+    pub fn effective_action(&self, package_id: &str) -> String {
+        self.action
+            .clone()
+            .unwrap_or_else(|| format!("module:{package_id}:{}", self.id))
+    }
 }
 
 /// Get the user apps install directory (public for transaction disk check).
@@ -152,6 +204,21 @@ fn user_desktop_dir() -> PathBuf {
             dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("~/.local/share"))
                 .join("applications")
+        })
+}
+
+/// Directory for compositor keybinding fragments written by the
+/// install daemon on behalf of module packages. The compositor watches
+/// this path and merges every `*.toml` into its static binding set.
+///
+/// Overrideable via `LUNARIS_USER_KEYBINDINGS_DIR` for tests.
+pub fn user_keybindings_fragment_dir() -> PathBuf {
+    std::env::var("LUNARIS_USER_KEYBINDINGS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("~/.config"))
+                .join("lunaris/compositor.d/keybindings.d")
         })
 }
 
@@ -506,10 +573,88 @@ pub fn uninstall_user(app_id: &str) -> Result<(), InstallError> {
     if let Ok(manifest) = load_manifest(&dest) {
         let _ = remove_schemas(&manifest);
         let _ = remove_modules(&manifest);
+        // Fragment cleanup is best-effort: a missing fragment on
+        // uninstall is normal for packages that never shipped one.
+        let _ = remove_keybindings_fragment(&manifest.package.id);
     }
 
     fs::remove_dir_all(&dest)?;
     tracing::info!("uninstalled {app_id}");
+    Ok(())
+}
+
+/// Write a keybinding fragment for this package.
+///
+/// Produces `~/.config/lunaris/compositor.d/keybindings.d/<id>.toml`
+/// containing a `[keybindings]` table of `"accelerator" = "action"`
+/// entries, one per manifest-declared binding. The compositor watcher
+/// picks it up on the next inotify tick.
+///
+/// * No-op if the manifest has no `[[keybinding]]` entries.
+/// * Global-scope entries without the
+///   `permissions.input = ["register_global_bindings"]` grant are
+///   skipped with a warning; focused-scope entries are always honoured.
+/// * Atomic: writes to `<file>.toml.tmp` then renames.
+pub fn write_keybindings_fragment(manifest: &Manifest) -> Result<Option<PathBuf>, InstallError> {
+    if manifest.keybindings.is_empty() {
+        return Ok(None);
+    }
+    let package_id = &manifest.package.id;
+    let dir = user_keybindings_fragment_dir();
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{package_id}.toml"));
+
+    let mut content = String::new();
+    content.push_str(&format!(
+        "# Auto-generated keybindings for {package_id}\n",
+    ));
+    content.push_str("# Managed by installd — do not edit manually.\n\n");
+    content.push_str("[keybindings]\n");
+
+    let can_global = manifest.permissions.can_register_global_bindings();
+    let mut written = 0u32;
+    for kb in &manifest.keybindings {
+        if kb.scope == "global" && !can_global {
+            tracing::warn!(
+                "installd: {package_id} declares global binding {:?} but has no \
+                 register_global_bindings permission — skipping",
+                kb.id
+            );
+            continue;
+        }
+        let action = kb.effective_action(package_id);
+        // Escape only double quotes; accelerator grammar allows no other
+        // special TOML characters today.
+        let binding = kb.default_binding.replace('"', "\\\"");
+        let action_escaped = action.replace('"', "\\\"");
+        content.push_str(&format!(
+            "\"{binding}\" = \"{action_escaped}\"  # {}\n",
+            kb.label
+        ));
+        written += 1;
+    }
+
+    if written == 0 {
+        // Nothing to persist — avoid creating an empty fragment that
+        // the compositor would re-read for no reason.
+        return Ok(None);
+    }
+
+    let tmp = path.with_extension("toml.tmp");
+    fs::write(&tmp, &content)?;
+    fs::rename(&tmp, &path)?;
+    tracing::info!("installd: wrote keybinding fragment {:?}", path);
+    Ok(Some(path))
+}
+
+/// Remove a previously written keybinding fragment for `package_id`.
+/// No-op if the fragment does not exist.
+pub fn remove_keybindings_fragment(package_id: &str) -> Result<(), InstallError> {
+    let path = user_keybindings_fragment_dir().join(format!("{package_id}.toml"));
+    if path.exists() {
+        fs::remove_file(&path)?;
+        tracing::info!("installd: removed keybinding fragment {:?}", path);
+    }
     Ok(())
 }
 
@@ -666,6 +811,7 @@ mod tests {
             permissions: PermissionInfo::default(),
             schemas: SchemaInfo::default(),
             modules: ModuleInfo::default(),
+            keybindings: Vec::new(),
         }
     }
 
@@ -893,5 +1039,167 @@ bundled = ["modules/com.test.full.waypointer"]
         assert_eq!(manifest.schemas.files.len(), 1);
         assert_eq!(manifest.modules.bundled.len(), 1);
         assert!(validate_manifest(&manifest).is_ok());
+    }
+
+    // ── Keybinding fragments ───────────────────────────────────────────
+
+    fn manifest_with_bindings(
+        package_id: &str,
+        grant_global: bool,
+        bindings: Vec<KeybindingEntry>,
+    ) -> Manifest {
+        let mut m = make_manifest();
+        m.package.id = package_id.into();
+        if grant_global {
+            m.permissions.input.push("register_global_bindings".into());
+        }
+        m.keybindings = bindings;
+        m
+    }
+
+    #[test]
+    fn manifest_parses_keybinding_section() {
+        let toml_str = r#"
+[package]
+id = "com.test.kb"
+name = "KB"
+version = "1.0.0"
+
+[binary]
+path = "bin/kb"
+
+[permissions]
+input = ["register_global_bindings"]
+
+[[keybinding]]
+id = "open"
+label = "Open"
+default_binding = "Super+O"
+"#;
+        let m: Manifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(m.keybindings.len(), 1);
+        assert_eq!(m.keybindings[0].scope, "global");
+        assert!(m.permissions.can_register_global_bindings());
+    }
+
+    #[test]
+    fn write_keybindings_fragment_writes_and_can_be_removed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("LUNARIS_USER_KEYBINDINGS_DIR", dir.path());
+
+        let m = manifest_with_bindings(
+            "com.test.kb",
+            true,
+            vec![KeybindingEntry {
+                id: "open".into(),
+                label: "Open".into(),
+                default_binding: "Super+O".into(),
+                action: None,
+                description: None,
+                scope: "global".into(),
+            }],
+        );
+        let path = write_keybindings_fragment(&m).unwrap().unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Super+O"));
+        assert!(content.contains("module:com.test.kb:open"));
+
+        remove_keybindings_fragment("com.test.kb").unwrap();
+        assert!(!path.exists());
+
+        std::env::remove_var("LUNARIS_USER_KEYBINDINGS_DIR");
+    }
+
+    #[test]
+    fn write_keybindings_fragment_skips_global_without_permission() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("LUNARIS_USER_KEYBINDINGS_DIR", dir.path());
+
+        let m = manifest_with_bindings(
+            "com.untrusted",
+            false, // no permission
+            vec![
+                KeybindingEntry {
+                    id: "global_action".into(),
+                    label: "Global".into(),
+                    default_binding: "Super+G".into(),
+                    action: None,
+                    description: None,
+                    scope: "global".into(),
+                },
+                KeybindingEntry {
+                    id: "focused_action".into(),
+                    label: "Focused".into(),
+                    default_binding: "Ctrl+F".into(),
+                    action: None,
+                    description: None,
+                    scope: "focused".into(),
+                },
+            ],
+        );
+        let path = write_keybindings_fragment(&m).unwrap().unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Global binding dropped, focused kept.
+        assert!(!content.contains("Super+G"));
+        assert!(content.contains("Ctrl+F"));
+
+        std::env::remove_var("LUNARIS_USER_KEYBINDINGS_DIR");
+    }
+
+    #[test]
+    fn write_keybindings_fragment_no_bindings_is_noop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("LUNARIS_USER_KEYBINDINGS_DIR", dir.path());
+
+        let m = manifest_with_bindings("com.noop", true, Vec::new());
+        assert!(write_keybindings_fragment(&m).unwrap().is_none());
+        assert!(!dir.path().join("com.noop.toml").exists());
+
+        std::env::remove_var("LUNARIS_USER_KEYBINDINGS_DIR");
+    }
+
+    #[test]
+    fn write_keybindings_fragment_all_filtered_is_noop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("LUNARIS_USER_KEYBINDINGS_DIR", dir.path());
+
+        let m = manifest_with_bindings(
+            "com.untrusted.global_only",
+            false,
+            vec![KeybindingEntry {
+                id: "only_global".into(),
+                label: "Global".into(),
+                default_binding: "Super+G".into(),
+                action: None,
+                description: None,
+                scope: "global".into(),
+            }],
+        );
+        // Every entry filtered out → no file should be written.
+        assert!(write_keybindings_fragment(&m).unwrap().is_none());
+
+        std::env::remove_var("LUNARIS_USER_KEYBINDINGS_DIR");
+    }
+
+    #[test]
+    fn remove_keybindings_fragment_missing_is_ok() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::env::set_var("LUNARIS_USER_KEYBINDINGS_DIR", dir.path());
+        remove_keybindings_fragment("com.does-not-exist").unwrap();
+        std::env::remove_var("LUNARIS_USER_KEYBINDINGS_DIR");
+    }
+
+    #[test]
+    fn keybinding_entry_effective_action_respects_override() {
+        let kb = KeybindingEntry {
+            id: "x".into(),
+            label: "X".into(),
+            default_binding: "Super+X".into(),
+            action: Some("spawn:foot".into()),
+            description: None,
+            scope: "global".into(),
+        };
+        assert_eq!(kb.effective_action("anything"), "spawn:foot");
     }
 }
