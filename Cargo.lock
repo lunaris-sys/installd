@@ -542,6 +542,8 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "libc",
+ "lunaris-modules",
+ "lunaris-permissions",
  "serde",
  "serde_json",
  "sha2",
@@ -558,6 +560,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lunaris-modules"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "lunaris-permission-helper"
 version = "0.1.0"
 dependencies = [
@@ -569,6 +580,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zbus",
+]
+
+[[package]]
+name = "lunaris-permissions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

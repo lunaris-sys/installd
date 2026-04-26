@@ -9,6 +9,8 @@ name = "lunaris-installd"
 path = "src/main.rs"
 
 [dependencies]
+lunaris-modules = { path = "../../sdk/modules" }
+lunaris-permissions = { path = "../../sdk/permissions" }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing = "0.1"

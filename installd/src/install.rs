@@ -462,6 +462,34 @@ pub fn install_modules(
         }
 
         copy_dir_recursive(&src, &dest)?;
+
+        // Generate the runtime permission profile from the module's
+        // own manifest. `lunaris-modulesd` reads this profile when
+        // loading the module so capability gating matches what the
+        // user agreed to at install time.
+        let module_manifest_path = dest.join("manifest.toml");
+        if module_manifest_path.exists() {
+            match lunaris_modules::load_manifest(&module_manifest_path) {
+                Ok(module_manifest) => {
+                    let profile = crate::module_permissions::profile_from_manifest(&module_manifest);
+                    if let Err(err) = crate::module_permissions::write_profile(&profile) {
+                        tracing::warn!(
+                            "installd: failed to write permission profile for {module_id}: {err}"
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "installd: skipping permission profile for {module_id}: manifest invalid: {err}"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                "installd: module {module_id} ships no manifest.toml; permission profile not written"
+            );
+        }
+
         installed.push(module_id);
     }
 
@@ -489,6 +517,14 @@ pub fn remove_modules(manifest: &Manifest) -> Result<(), InstallError> {
             if dest.exists() {
                 fs::remove_dir_all(&dest)?;
                 tracing::info!("removed module {id}");
+            }
+            // Pair the bundle removal with permission profile
+            // cleanup so an uninstalled module does not leave its
+            // grants on disk.
+            if let Err(err) = crate::module_permissions::remove_profile(&id) {
+                tracing::warn!(
+                    "installd: failed to remove permission profile for {id}: {err}"
+                );
             }
         }
     }
