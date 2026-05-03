@@ -28,13 +28,18 @@ use lunaris_permissions::{
 
 use crate::install::InstallError;
 
+/// Foundation §7.3 canonical: `~/.config/permissions/{app_id}.toml`.
+/// No `lunaris/` sub-dir (this module previously used the wrong path).
+/// `LUNARIS_PERMISSIONS_DIR` test override resolves directly to a flat
+/// `<dir>/{app_id}.toml` for test simplicity.
 pub fn permissions_dir() -> PathBuf {
     if let Ok(p) = std::env::var("LUNARIS_PERMISSIONS_DIR") {
         return PathBuf::from(p);
     }
-    dirs::config_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("lunaris/permissions")
+        .join(".config")
+        .join("permissions")
 }
 
 pub fn permission_profile_path(module_id: &str) -> PathBuf {
@@ -108,6 +113,14 @@ fn clipboard_from(caps: &ModuleCapabilities) -> ClipboardPermissions {
         Some(c) => ClipboardPermissions {
             read: c.read,
             write: c.write,
+            // Sprint-C-clipboard-extension fields. Default off
+            // unless the manifest explicitly grants them; module
+            // manifest schema does not yet expose these as
+            // user-toggles, so they stay false at install time
+            // and must be added to the user's profile by hand
+            // (foundation §7.3 — explicit only).
+            read_sensitive: false,
+            history: false,
         },
         None => ClipboardPermissions::default(),
     }
